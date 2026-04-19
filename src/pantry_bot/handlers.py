@@ -10,25 +10,43 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from .auth import whitelisted
-from .db import Item, ItemChange, apply_changes, clear_all, list_items
+from .db import (
+    Item,
+    ItemChange,
+    ShoppingItem,
+    apply_changes,
+    apply_shopping_changes,
+    clear_all,
+    clear_shopping,
+    list_items,
+    list_shopping,
+    take_shopping_item,
+)
 from .llm import LLMError, OpenRouterClient, Recipe
 
 log = logging.getLogger(__name__)
 
 PENDING_KEY = "pending_changes"
 CLEAR_KEY = "pending_clear"
+SHOPCLEAR_KEY = "pending_shopclear"
 RECIPES_KEY = "proposed_recipes"
 
 HELP_TEXT = (
     "Pantry bot. I keep track of what's in your kitchen.\n\n"
-    "Commands:\n"
+    "Pantry:\n"
     "/list — show current pantry\n"
     "/add <text> — add items (e.g. `2kg rice, 6 eggs`)\n"
     "/remove <text> — remove items (e.g. `3 eggs`)\n"
-    "/cook [direction] — recipe suggestions (optional: e.g. `/cook something spicy`, `/cook vegetarian`)\n"
     "/clear — wipe the pantry (with confirmation)\n\n"
+    "Shopping list:\n"
+    "/shop — show shopping list; tap ✓ to mark an item as bought (moves to pantry)\n"
+    "/buy <text> — add to shopping list (e.g. `/buy milk, 2 onions`)\n"
+    "/unbuy <text> — remove from shopping list\n"
+    "/shopclear — wipe the shopping list (with confirmation)\n\n"
+    "Cooking:\n"
+    "/cook [direction] — recipe suggestions (optional: e.g. `/cook something spicy`)\n\n"
     "You can also just send a plain message or a photo of groceries — "
-    "I'll figure out what you mean and ask before saving."
+    "I'll figure out what you mean and ask before saving (pantry by default)."
 )
 
 
@@ -60,7 +78,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         await update.effective_message.reply_text("Usage: /add 2kg rice, 6 eggs")
         return
-    await _handle_text(update, context, text, force_action="add")
+    await _handle_text(update, context, text, force_action="add", target="pantry")
 
 
 @whitelisted
@@ -69,7 +87,55 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not text:
         await update.effective_message.reply_text("Usage: /remove 3 eggs")
         return
-    await _handle_text(update, context, text, force_action="remove")
+    await _handle_text(update, context, text, force_action="remove", target="pantry")
+
+
+@whitelisted
+async def cmd_shop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    conn: sqlite3.Connection = context.application.bot_data["db"]
+    items = list_shopping(conn)
+    if not items:
+        await update.effective_message.reply_text("Shopping list is empty. Add with /buy.")
+        return
+    await update.effective_message.reply_text(
+        _format_shopping(items),
+        parse_mode="Markdown",
+        reply_markup=_shopping_keyboard(items),
+    )
+
+
+@whitelisted
+async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(context.args).strip()
+    if not text:
+        await update.effective_message.reply_text("Usage: /buy milk, 2 onions")
+        return
+    await _handle_text(update, context, text, force_action="add", target="shopping")
+
+
+@whitelisted
+async def cmd_unbuy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(context.args).strip()
+    if not text:
+        await update.effective_message.reply_text("Usage: /unbuy milk")
+        return
+    await _handle_text(update, context, text, force_action="remove", target="shopping")
+
+
+@whitelisted
+async def cmd_shopclear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    token = uuid.uuid4().hex[:8]
+    context.user_data[SHOPCLEAR_KEY] = token
+    keyboard = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🗑 Yes, wipe it", callback_data=f"shopclear:yes:{token}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"shopclear:no:{token}"),
+        ]]
+    )
+    await update.effective_message.reply_text(
+        "This will clear the shopping list. Are you sure?",
+        reply_markup=keyboard,
+    )
 
 
 @whitelisted
@@ -146,7 +212,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.effective_message.text or "").strip()
     if not text:
         return
-    await _handle_text(update, context, text, force_action=None)
+    await _handle_text(update, context, text, force_action=None, target="pantry")
 
 
 @whitelisted
@@ -174,7 +240,7 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await thinking.delete()
-    await _propose_changes(update, context, changes)
+    await _propose_changes(update, context, changes, target="pantry")
 
 
 # --- shared text parsing flow ----------------------------------------------
@@ -184,6 +250,7 @@ async def _handle_text(
     context: ContextTypes.DEFAULT_TYPE,
     text: str,
     force_action: str | None,
+    target: str,
 ) -> None:
     llm: OpenRouterClient = context.application.bot_data["llm"]
     try:
@@ -208,23 +275,25 @@ async def _handle_text(
 
     if not changes:
         await update.effective_message.reply_text(
-            "I didn't find any pantry items in that. Try something like `2kg rice`."
+            "I didn't find any items in that. Try something like `2kg rice`."
         )
         return
 
-    await _propose_changes(update, context, changes)
+    await _propose_changes(update, context, changes, target=target)
 
 
 async def _propose_changes(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     changes: list[ItemChange],
+    target: str,
 ) -> None:
     token = uuid.uuid4().hex[:8]
     pending = context.user_data.setdefault(PENDING_KEY, {})
-    pending[token] = changes
+    pending[token] = {"target": target, "changes": changes}
 
-    summary_lines = ["I understood:"]
+    label = "shopping list" if target == "shopping" else "pantry"
+    summary_lines = [f"I understood ({label}):"]
     for c in changes:
         prefix = "+" if c.action == "add" else "-"
         qty = f"{c.quantity:g}{c.unit if c.unit != 'unit' else ''}"
@@ -262,8 +331,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _resolve_apply(update, context, parts[1], parts[2])
     elif kind == "clear" and len(parts) == 3:
         await _resolve_clear(update, context, parts[1], parts[2])
+    elif kind == "shopclear" and len(parts) == 3:
+        await _resolve_shopclear(update, context, parts[1], parts[2])
     elif kind == "recipe" and len(parts) == 3:
         await _resolve_recipe(update, context, parts[1], parts[2])
+    elif kind == "bought" and len(parts) == 2:
+        await _resolve_bought(update, context, parts[1])
 
 
 async def _resolve_apply(
@@ -272,11 +345,11 @@ async def _resolve_apply(
     choice: str,
     token: str,
 ) -> None:
-    pending: dict[str, list[ItemChange]] = context.user_data.get(PENDING_KEY, {})
-    changes = pending.pop(token, None)
+    pending: dict[str, dict] = context.user_data.get(PENDING_KEY, {})
+    entry = pending.pop(token, None)
     query = update.callback_query
 
-    if changes is None:
+    if entry is None:
         await query.edit_message_text("That confirmation is no longer valid.")
         return
 
@@ -284,11 +357,64 @@ async def _resolve_apply(
         await query.edit_message_text("Cancelled.")
         return
 
+    target = entry.get("target", "pantry")
+    changes: list[ItemChange] = entry["changes"]
     conn: sqlite3.Connection = context.application.bot_data["db"]
     user_id = update.effective_user.id
-    results = apply_changes(conn, changes, user_id)
+    if target == "shopping":
+        results = apply_shopping_changes(conn, changes, user_id)
+    else:
+        results = apply_changes(conn, changes, user_id)
     body = "Done:\n" + "\n".join(results) if results else "Done."
     await query.edit_message_text(body)
+
+
+async def _resolve_shopclear(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    choice: str,
+    token: str,
+) -> None:
+    expected = context.user_data.pop(SHOPCLEAR_KEY, None)
+    query = update.callback_query
+    if expected != token:
+        await query.edit_message_text("That confirmation is no longer valid.")
+        return
+    if choice != "yes":
+        await query.edit_message_text("Cancelled.")
+        return
+    conn: sqlite3.Connection = context.application.bot_data["db"]
+    count = clear_shopping(conn, update.effective_user.id)
+    await query.edit_message_text(f"Cleared {count} items from the shopping list.")
+
+
+async def _resolve_bought(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    item_id_str: str,
+) -> None:
+    query = update.callback_query
+    try:
+        item_id = int(item_id_str)
+    except ValueError:
+        await query.answer("Invalid item.", show_alert=True)
+        return
+
+    conn: sqlite3.Connection = context.application.bot_data["db"]
+    user_id = update.effective_user.id
+    item, _msg = take_shopping_item(conn, item_id, user_id)
+    if item is None:
+        await query.answer("Already handled.", show_alert=True)
+
+    remaining = list_shopping(conn)
+    if not remaining:
+        await query.edit_message_text("Shopping list is empty. 🎉")
+        return
+    await query.edit_message_text(
+        _format_shopping(remaining),
+        parse_mode="Markdown",
+        reply_markup=_shopping_keyboard(remaining),
+    )
 
 
 async def _resolve_clear(
@@ -376,6 +502,25 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception:
         log.exception("failed to notify user of error")
+
+
+def _format_shopping(items: list[ShoppingItem]) -> str:
+    lines = ["*Shopping list:*"]
+    for i, it in enumerate(items, 1):
+        qty = f"{it.quantity:g}{it.unit if it.unit != 'unit' else ''}"
+        lines.append(f"{i}. {qty} {it.name}")
+    lines.append("\n_Tap ✓ to mark bought (moves to pantry)._")
+    return "\n".join(lines)
+
+
+def _shopping_keyboard(items: list[ShoppingItem]) -> InlineKeyboardMarkup:
+    # One ✓ button per item, packed 3 per row.
+    buttons = [
+        InlineKeyboardButton(f"✓ {i}", callback_data=f"bought:{it.id}")
+        for i, it in enumerate(items, 1)
+    ]
+    rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
+    return InlineKeyboardMarkup(rows)
 
 
 def _format_list(items: list[Item]) -> str:

@@ -23,6 +23,10 @@ uv run pantry-bot
 - `/remove <text>` — e.g. `/remove 3 eggs`.
 - `/cook [direction]` — recipe suggestions from current stock; optional free-form direction (e.g. `/cook vegetarian`, `/cook something spicy in 20 minutes`).
 - `/clear` — wipe the pantry (confirmation required).
+- `/shop` — show shopping list; tap ✓ to mark an item as bought (moves it into the pantry).
+- `/buy <text>` — add to the shopping list (e.g. `/buy milk, 2 onions`).
+- `/unbuy <text>` — remove from the shopping list.
+- `/shopclear` — wipe the shopping list (confirmation required).
 
 You can also just send a plain message or a photo; the bot parses it with the LLM and asks for confirmation before writing.
 

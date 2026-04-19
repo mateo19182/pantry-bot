@@ -13,7 +13,7 @@ Not a commitment — just things worth trying.
 
 - **Saved recipe book.** A `recipes` table of user-saved dishes. `/cook` first looks for matches against saved recipes before free-styling; tapping a recipe saves it. Recipes saved from reels land here too.
 - **"Cook this"** command. `/make <recipe name>` — deduct the recipe's ingredients from the pantry in one go (with confirmation).
-- **Shopping list.** `/shop` generates a list from the `missing` fields of recent `/cook` suggestions, or from a target recipe.
+- **Auto-populate shopping list** from the `missing` fields of `/cook` suggestions, or from a target recipe.
 
 ## Pantry hygiene
 
