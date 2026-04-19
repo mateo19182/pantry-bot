@@ -31,6 +31,33 @@ Rules:
 - If you cannot extract anything, return {"changes": []}.
 - Do NOT include commentary, markdown, or code fences. Only the JSON object."""
 
+RECIPE_DETAIL_SYSTEM = """You are a cooking assistant. Given one recipe title and a pantry, write a clear, detailed cooking guide.
+
+Format (plain text, no code fences, no JSON):
+
+*<Recipe title>*
+
+Serves: <rough portions>
+Time: <prep + cook>
+
+Ingredients:
+- <item> — <quantity, with unit>
+- ...
+
+Steps:
+1. <step>
+2. <step>
+...
+
+Tips: <1-2 short lines, optional>
+
+Rules:
+- Use the pantry quantities where possible; if you need more than what's on hand, flag it in the ingredient line.
+- Mark ingredients not in the pantry with "(missing)" at the end of the line.
+- Keep steps concrete — include temperatures and durations.
+- Keep the whole message under ~450 words so it renders well in Telegram.
+- Use *asterisks* for emphasis (Telegram Markdown). Do NOT use other markdown formatting."""
+
 RECIPES_SYSTEM = """You suggest cooking ideas from a list of pantry items.
 
 Return ONLY a JSON object of the form:
@@ -140,7 +167,37 @@ class OpenRouterClient:
         data = await self._post(payload)
         return _parse_recipes(data)
 
-    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def detail_recipe(
+        self, recipe: Recipe, items: list[Item], direction: str | None = None
+    ) -> str:
+        pantry_lines = [
+            f"- {it.name}: {it.quantity}{it.unit}"
+            + (f" (expires {it.expires_at.isoformat()})" if it.expires_at else "")
+            for it in items
+        ]
+        user_parts = [
+            f"Recipe to expand: {recipe.title}",
+        ]
+        if recipe.uses:
+            user_parts.append(f"It uses: {', '.join(recipe.uses)}")
+        if recipe.missing:
+            user_parts.append(f"Missing ingredients: {', '.join(recipe.missing)}")
+        if recipe.steps:
+            user_parts.append(f"Short summary: {recipe.steps}")
+        user_parts.append("Pantry:\n" + "\n".join(pantry_lines))
+        if direction:
+            user_parts.append(f"User direction: {direction}")
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": RECIPE_DETAIL_SYSTEM},
+                {"role": "user", "content": "\n\n".join(user_parts)},
+            ],
+        }
+        return await self._post_text(payload)
+
+    async def _post_text(self, payload: dict[str, Any]) -> str:
         try:
             resp = await self._client.post("/chat/completions", json=payload)
         except httpx.HTTPError as e:
@@ -149,10 +206,12 @@ class OpenRouterClient:
             raise LLMError(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
         body = resp.json()
         try:
-            content = body["choices"][0]["message"]["content"]
+            return body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
             raise LLMError(f"unexpected OpenRouter response: {body}") from e
-        return _extract_json(content)
+
+    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return _extract_json(await self._post_text(payload))
 
 
 def _extract_json(content: str) -> dict[str, Any]:

@@ -11,12 +11,13 @@ from telegram.ext import ContextTypes
 
 from .auth import whitelisted
 from .db import Item, ItemChange, apply_changes, clear_all, list_items
-from .llm import LLMError, OpenRouterClient
+from .llm import LLMError, OpenRouterClient, Recipe
 
 log = logging.getLogger(__name__)
 
 PENDING_KEY = "pending_changes"
 CLEAR_KEY = "pending_clear"
+RECIPES_KEY = "proposed_recipes"
 
 HELP_TEXT = (
     "Pantry bot. I keep track of what's in your kitchen.\n\n"
@@ -94,16 +95,31 @@ async def cmd_cook(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.edit_text("Couldn't think of anything with this pantry.")
         return
 
+    token = uuid.uuid4().hex[:8]
+    store = context.user_data.setdefault(RECIPES_KEY, {})
+    store[token] = {"recipes": recipes, "direction": direction}
+
     lines: list[str] = []
-    for r in recipes:
-        lines.append(f"🍳 *{r.title}*")
+    for i, r in enumerate(recipes, 1):
+        lines.append(f"*{i}. {r.title}*")
         if r.uses:
             lines.append(f"uses: {', '.join(r.uses)}")
         if r.missing:
             lines.append(f"missing: {', '.join(r.missing)}")
         lines.append(r.steps)
         lines.append("")
-    await msg.edit_text("\n".join(lines).strip(), parse_mode="Markdown")
+    lines.append("_Tap a number for the full recipe._")
+
+    buttons = [
+        InlineKeyboardButton(f"👨‍🍳 {i}", callback_data=f"recipe:{token}:{i - 1}")
+        for i, _ in enumerate(recipes, 1)
+    ]
+    keyboard = InlineKeyboardMarkup([buttons])
+    await msg.edit_text(
+        "\n".join(lines).strip(),
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
 
 
 @whitelisted
@@ -237,15 +253,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     await query.answer()
 
-    parts = query.data.split(":", 2)
-    if len(parts) != 3:
+    parts = query.data.split(":")
+    if len(parts) < 2:
         return
-    kind, choice, token = parts
 
-    if kind == "apply":
-        await _resolve_apply(update, context, choice, token)
-    elif kind == "clear":
-        await _resolve_clear(update, context, choice, token)
+    kind = parts[0]
+    if kind == "apply" and len(parts) == 3:
+        await _resolve_apply(update, context, parts[1], parts[2])
+    elif kind == "clear" and len(parts) == 3:
+        await _resolve_clear(update, context, parts[1], parts[2])
+    elif kind == "recipe" and len(parts) == 3:
+        await _resolve_recipe(update, context, parts[1], parts[2])
 
 
 async def _resolve_apply(
@@ -295,6 +313,51 @@ async def _resolve_clear(
 
 
 # --- formatting -------------------------------------------------------------
+
+async def _resolve_recipe(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    token: str,
+    index_str: str,
+) -> None:
+    query = update.callback_query
+    store: dict[str, dict] = context.user_data.get(RECIPES_KEY, {})
+    entry = store.get(token)
+    try:
+        index = int(index_str)
+    except ValueError:
+        await query.answer("Invalid selection.", show_alert=True)
+        return
+
+    if entry is None:
+        await query.answer("That recipe list is no longer available — run /cook again.", show_alert=True)
+        return
+
+    recipes: list[Recipe] = entry["recipes"]
+    direction: str | None = entry.get("direction")
+    if not 0 <= index < len(recipes):
+        await query.answer("Invalid selection.", show_alert=True)
+        return
+
+    recipe = recipes[index]
+    conn: sqlite3.Connection = context.application.bot_data["db"]
+    llm: OpenRouterClient = context.application.bot_data["llm"]
+    items = list_items(conn)
+
+    thinking = await query.message.reply_text(f"Writing up *{recipe.title}*…", parse_mode="Markdown")
+    try:
+        detail = await llm.detail_recipe(recipe, items, direction=direction)
+    except LLMError as e:
+        log.warning("recipe detail failed: %s", e)
+        await thinking.edit_text("Couldn't expand that recipe right now, try again.")
+        return
+
+    try:
+        await thinking.edit_text(detail, parse_mode="Markdown")
+    except Exception:
+        log.exception("markdown send failed for recipe detail; falling back to plain text")
+        await thinking.edit_text(detail)
+
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Telegram error handler: log the traceback and tell the user something broke."""
