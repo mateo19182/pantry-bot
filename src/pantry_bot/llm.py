@@ -75,7 +75,7 @@ class OpenRouterClient:
         await self._client.aclose()
 
     async def parse_message(self, text: str) -> list[ItemChange]:
-        system = PARSE_SYSTEM.format(today=date.today().isoformat())
+        system = PARSE_SYSTEM.replace("{today}", date.today().isoformat())
         payload = {
             "model": self._model,
             "messages": [
@@ -88,7 +88,7 @@ class OpenRouterClient:
         return _parse_changes(data)
 
     async def parse_image(self, image_bytes: bytes, mime: str, caption: str | None) -> list[ItemChange]:
-        system = PARSE_SYSTEM.format(today=date.today().isoformat())
+        system = PARSE_SYSTEM.replace("{today}", date.today().isoformat())
         b64 = base64.b64encode(image_bytes).decode("ascii")
         user_content: list[dict[str, Any]] = [
             {
