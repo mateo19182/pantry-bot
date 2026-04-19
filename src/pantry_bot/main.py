@@ -44,6 +44,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.PHOTO, handlers.on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.on_text))
     app.add_handler(CallbackQueryHandler(handlers.on_callback))
+    app.add_error_handler(handlers.on_error)
 
     async def _shutdown(_app: Application) -> None:
         await llm.aclose()

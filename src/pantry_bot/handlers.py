@@ -294,6 +294,25 @@ async def _resolve_clear(
 
 # --- formatting -------------------------------------------------------------
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Telegram error handler: log the traceback and tell the user something broke."""
+    log.exception("handler error", exc_info=context.error)
+
+    if not isinstance(update, Update) or update.effective_chat is None:
+        return
+
+    err = context.error
+    detail = f"{type(err).__name__}: {err}" if err else "unknown error"
+    text = f"⚠️ Something went wrong handling that.\n\n{detail}"
+    try:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+        )
+    except Exception:
+        log.exception("failed to notify user of error")
+
+
 def _format_list(items: list[Item]) -> str:
     today = date.today()
     soon = today + timedelta(days=3)
