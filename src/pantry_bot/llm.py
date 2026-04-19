@@ -42,6 +42,7 @@ Rules:
 - "missing" lists any extras not in the pantry (keep short, 0-3 items).
 - "steps" is a single short paragraph (2-4 sentences), no bullet list.
 - Return 3 recipes unless the pantry is nearly empty.
+- If the user provides a direction (cuisine, diet, time, mood, occasion, etc.), honor it. If the pantry can't satisfy it, still return the best-effort recipes and flag why in the "steps" field.
 - Do NOT include commentary, markdown, or code fences."""
 
 
@@ -115,7 +116,9 @@ class OpenRouterClient:
         data = await self._post(payload)
         return _parse_changes(data)
 
-    async def suggest_recipes(self, items: list[Item]) -> list[Recipe]:
+    async def suggest_recipes(
+        self, items: list[Item], direction: str | None = None
+    ) -> list[Recipe]:
         if not items:
             return []
         pantry_lines = [
@@ -124,6 +127,8 @@ class OpenRouterClient:
             for it in items
         ]
         user_text = "Pantry:\n" + "\n".join(pantry_lines)
+        if direction:
+            user_text += f"\n\nUser direction: {direction}"
         payload = {
             "model": self._model,
             "messages": [

@@ -24,7 +24,7 @@ HELP_TEXT = (
     "/list — show current pantry\n"
     "/add <text> — add items (e.g. `2kg rice, 6 eggs`)\n"
     "/remove <text> — remove items (e.g. `3 eggs`)\n"
-    "/cook — recipe suggestions from what you have\n"
+    "/cook [direction] — recipe suggestions (optional: e.g. `/cook something spicy`, `/cook vegetarian`)\n"
     "/clear — wipe the pantry (with confirmation)\n\n"
     "You can also just send a plain message or a photo of groceries — "
     "I'll figure out what you mean and ask before saving."
@@ -79,10 +79,12 @@ async def cmd_cook(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("Pantry is empty — nothing to cook with.")
         return
 
+    direction = " ".join(context.args).strip() or None
     llm: OpenRouterClient = context.application.bot_data["llm"]
-    msg = await update.effective_message.reply_text("Thinking up ideas…")
+    thinking_msg = "Thinking up ideas…" if not direction else f"Thinking up ideas ({direction})…"
+    msg = await update.effective_message.reply_text(thinking_msg)
     try:
-        recipes = await llm.suggest_recipes(items)
+        recipes = await llm.suggest_recipes(items, direction=direction)
     except LLMError as e:
         log.warning("recipe suggestion failed: %s", e)
         await msg.edit_text("Couldn't get recipes right now, try again in a moment.")

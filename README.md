@@ -21,7 +21,7 @@ uv run pantry-bot
 - `/list` — show current pantry sorted by expiry.
 - `/add <text>` — e.g. `/add 2kg rice, 6 eggs expiring friday`.
 - `/remove <text>` — e.g. `/remove 3 eggs`.
-- `/cook` — recipe suggestions from current stock.
+- `/cook [direction]` — recipe suggestions from current stock; optional free-form direction (e.g. `/cook vegetarian`, `/cook something spicy in 20 minutes`).
 - `/clear` — wipe the pantry (confirmation required).
 
 You can also just send a plain message or a photo; the bot parses it with the LLM and asks for confirmation before writing.
